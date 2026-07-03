@@ -18,6 +18,11 @@ function Chat() {
   const [messages, setMessages] = useState([]);
   const isJoined = useRef(false);
   const chatRef = useRef(null);
+  const selectedUserRef = useRef(selectedUser);
+
+  useEffect(() => {
+    selectedUserRef.current = selectedUser;
+  }, [selectedUser]);
 
   //for auto scroll
   useEffect(() => {
@@ -37,8 +42,8 @@ function Chat() {
       setRoomUsers(usersWithoutMe);
 
       if (
-        selectedUser &&
-        !usersWithoutMe.find((person) => person.id === selectedUser.id)
+        selectedUserRef.current &&
+        !usersWithoutMe.find((person) => person.id === selectedUserRef.current.id)
       ) {
         setSelectedUser(null);
       }
@@ -72,16 +77,19 @@ function Chat() {
       socket.off("joined");
       socket.off("left");
     };
-  }, [selectedUser, setRoomUsers, setSelectedUser, user]);
+  }, [setRoomUsers, setSelectedUser, user]);
 
-  const handelSend = (e) => {
+  const handleSend = (e) => {
     e.preventDefault();
-    if (message.trim() == "") return;
-    console.log(user);
+    const text = message.trim();
+    if (text === "") return;
+
+    const messageTarget = selectedUserRef.current;
+
     socket.emit("chat", {
       user,
-      message,
-      to: selectedUser ? selectedUser.id : null,
+      message: text,
+      to: messageTarget ? messageTarget.id : null,
     });
     setMessage("");
   };
@@ -184,12 +192,14 @@ function Chat() {
 
       <div className="p-3 border-t border-neutral-200 bg-white">
         {/* this is chat Send */}
-        <form action="" className="flex gap-2" onSubmit={handelSend}>
+        <form className="flex gap-2" onSubmit={handleSend}>
           <input
             type="text"
-            className="border border-neutral-300 p-3 rounded-xl w-full outline-none focus:border-blue-500"
+            className="min-w-0 border border-neutral-300 p-3 rounded-xl w-full outline-none focus:border-blue-500"
             value={message}
             onChange={(e) => setMessage(e.target.value)}
+            enterKeyHint="send"
+            autoComplete="off"
             placeholder={
               selectedUser ? `Message ${selectedUser.name}` : "Message everyone"
             }

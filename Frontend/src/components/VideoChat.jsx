@@ -25,10 +25,11 @@ const {
   onRemoteStream,
   getLocalStream,
   replaceVideoTrack,
+  resetConnection,
 } = peer;
 
 function VideoChat() {
-  const { user, selectedUser, setSelectedUser } = useUser();
+  const { user, roomUsers, selectedUser, setSelectedUser } = useUser();
   const localVideo = useRef(null);
   const remoteVideo = useRef(null);
   const originalStream = useRef(null);
@@ -58,6 +59,18 @@ function VideoChat() {
 
     callUserRef.current = person;
     setCallUser(person);
+  };
+
+  const playVideo = async (videoElement, stream) => {
+    if (!videoElement || !stream) return;
+
+    videoElement.srcObject = stream;
+
+    try {
+      await videoElement.play();
+    } catch (err) {
+      console.error("Video play blocked:", err);
+    }
   };
 
   const stopRingSound = () => {
@@ -118,14 +131,29 @@ function VideoChat() {
     setCallStatus(status);
   };
 
+  const startLocalMedia = async () => {
+    if (originalStream.current) {
+      await playVideo(localVideo.current, originalStream.current);
+      handleLocalStream(originalStream.current);
+      return originalStream.current;
+    }
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: true,
+      audio: true,
+    });
+
+    originalStream.current = stream;
+    handleLocalStream(stream);
+    await playVideo(localVideo.current, stream);
+    setIsMuted(false);
+    setIsCameraOff(false);
+
+    return stream;
+  };
+
   useEffect(() => {
-    navigator.mediaDevices
-      .getUserMedia({ video: true, audio: true })
-      .then((stream) => {
-        originalStream.current = stream;
-        localVideo.current.srcObject = stream;
-        handleLocalStream(stream);
-      })
+    startLocalMedia()
       .catch((err) => {
         console.error("Camera or mic error:", err);
         setCallStatus("Camera or mic blocked");
@@ -143,11 +171,14 @@ function VideoChat() {
       rememberCallUser(from);
       setSelectedUser(from);
       setCallStatus(`Connecting with ${from.name}`);
+      resetConnection(from.id);
+      await startLocalMedia();
       await createOffer(from.id);
     });
 
     socket.on("offer", async ({ offer, from }) => {
       stopRingSound();
+      await startLocalMedia();
       await handleOffer(offer, from);
       setCallStatus("In call");
     });
@@ -158,8 +189,8 @@ function VideoChat() {
       setCallStatus("In call");
     });
 
-    socket.on("candidate", ({ candidate }) => {
-      handleCandidate(candidate);
+    socket.on("candidate", ({ candidate, from }) => {
+      handleCandidate(candidate, from);
     });
 
     socket.on("end-call", async ({ from }) => {
@@ -167,10 +198,11 @@ function VideoChat() {
         await stopShareScreen(false);
       }
       clearRemoteCall(`${from.name} left the call`);
+      resetConnection();
     });
 
     onRemoteStream((stream) => {
-      remoteVideo.current.srcObject = stream;
+      playVideo(remoteVideo.current, stream);
       setHasRemoteStream(true);
       setCallStatus("In call");
     });
@@ -187,24 +219,45 @@ function VideoChat() {
   }, [setSelectedUser]);
 
   const startCall = async () => {
-    const targetUser = selectedUser || callUserRef.current;
+    const rememberedUser = roomUsers.find(
+      (person) => person.id === callUserRef.current?.id
+    );
+    const targetUser = selectedUser || rememberedUser;
     if (!targetUser) return;
 
-    rememberCallUser(targetUser);
-    setSelectedUser(targetUser);
-    setCallStatus(`Ringing ${targetUser.name}`);
-    startRingSound();
-    socket.emit("call-user", { to: targetUser.id, from: user });
+    try {
+      rememberCallUser(targetUser);
+      setSelectedUser(targetUser);
+      setCallStatus(`Ringing ${targetUser.name}`);
+      startRingSound();
+      resetConnection(targetUser.id);
+      await startLocalMedia();
+      socket.emit("call-user", { to: targetUser.id, from: user });
+    } catch (err) {
+      console.error("Call start error:", err);
+      stopRingSound();
+      resetConnection();
+      setCallStatus("Camera or mic blocked");
+    }
   };
 
-  const acceptCall = () => {
+  const acceptCall = async () => {
     if (!incomingCall) return;
-    stopRingSound();
-    rememberCallUser(incomingCall);
-    setSelectedUser(incomingCall);
-    setCallStatus(`Connecting with ${incomingCall.name}`);
-    socket.emit("accept-call", { to: incomingCall.id, from: user });
-    setIncomingCall(null);
+
+    try {
+      stopRingSound();
+      rememberCallUser(incomingCall);
+      setSelectedUser(incomingCall);
+      setCallStatus(`Connecting with ${incomingCall.name}`);
+      resetConnection(incomingCall.id);
+      await startLocalMedia();
+      socket.emit("accept-call", { to: incomingCall.id, from: user });
+      setIncomingCall(null);
+    } catch (err) {
+      console.error("Accept call error:", err);
+      resetConnection();
+      setCallStatus("Camera or mic blocked");
+    }
   };
 
   const ignoreCall = () => {
@@ -232,7 +285,7 @@ function VideoChat() {
       }
 
       if (localVideo.current && cameraStream) {
-        localVideo.current.srcObject = cameraStream;
+        await playVideo(localVideo.current, cameraStream);
       }
 
       setisShare(false);
@@ -270,9 +323,7 @@ function VideoChat() {
       await replaceVideoTrack(screenVideoTrack, true);
 
       screenVideoTrack.onended = () => stopShareScreen(true);
-      if (localVideo.current) {
-        localVideo.current.srcObject = screenStream;
-      }
+      await playVideo(localVideo.current, screenStream);
       setisShare(true);
       setCallStatus("Sharing screen");
     } catch (err) {
@@ -292,6 +343,7 @@ function VideoChat() {
     }
 
     clearRemoteCall("You left the call");
+    resetConnection();
   };
 
   const toggleMute = () => {
@@ -314,12 +366,22 @@ function VideoChat() {
     }
   };
 
-  const displayUser = callUser || selectedUser;
-  const canShareScreen = displayUser && hasRemoteStream;
-  const canLeaveCall =
-    displayUser && (hasRemoteStream || callStatus.toLowerCase().includes("ringing"));
-  const canStartCall =
-    (selectedUser || callUser) && !hasRemoteStream && !callStatus.toLowerCase().includes("ringing");
+  const normalizedStatus = callStatus.toLowerCase();
+  const isCallBusy =
+    hasRemoteStream ||
+    normalizedStatus.includes("ringing") ||
+    normalizedStatus.includes("connecting") ||
+    normalizedStatus.includes("sharing");
+  const rememberedUser = callUser
+    ? roomUsers.find((person) => person.id === callUser.id)
+    : null;
+  const displayUser = isCallBusy
+    ? callUser || selectedUser
+    : selectedUser || rememberedUser;
+  const supportsScreenShare = Boolean(navigator.mediaDevices?.getDisplayMedia);
+  const canShareScreen = displayUser && hasRemoteStream && supportsScreenShare;
+  const canLeaveCall = displayUser && isCallBusy;
+  const canStartCall = (selectedUser || rememberedUser) && !isCallBusy;
 
   return (
     <div className="flex flex-col flex-1 min-h-[58vh] bg-[#eef1f5] p-3 md:min-h-screen md:p-5">
@@ -342,6 +404,29 @@ function VideoChat() {
         </div>
       </div>
 
+      <div className="mb-3 flex gap-2 overflow-x-auto pb-1 md:hidden">
+        {roomUsers.length === 0 ? (
+          <div className="w-full rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-500">
+            Waiting for someone to join this room
+          </div>
+        ) : (
+          roomUsers.map((person) => (
+            <button
+              key={person.id}
+              type="button"
+              className={`shrink-0 rounded-xl border px-3 py-2 text-sm font-semibold ${
+                selectedUser?.id === person.id
+                  ? "border-blue-600 bg-blue-600 text-white"
+                  : "border-neutral-200 bg-white text-neutral-800"
+              }`}
+              onClick={() => setSelectedUser(person)}
+            >
+              {person.name}
+            </button>
+          ))
+        )}
+      </div>
+
       {/* Video Container */}
       <div className="relative flex-1 min-h-[300px] max-h-[58vh] bg-neutral-950 rounded-2xl overflow-hidden flex items-center justify-center shadow-[0_24px_60px_rgba(15,23,42,0.18)] border border-neutral-900 sm:min-h-[420px] md:max-h-none">
         <video
@@ -356,7 +441,7 @@ function VideoChat() {
             <div className="relative mb-5">
               <div className="absolute inset-0 rounded-full bg-blue-500/20 animate-ping"></div>
               <div className="relative w-24 h-24 rounded-full bg-neutral-800 border border-white/10 flex items-center justify-center text-4xl shadow-xl">
-                {selectedUser?.name?.charAt(0)?.toUpperCase() || "H"}
+                {displayUser?.name?.charAt(0)?.toUpperCase() || "H"}
               </div>
             </div>
             <div className="text-xl font-semibold">
@@ -421,7 +506,7 @@ function VideoChat() {
       </div>
 
       {/* Buttons */}
-      <div className="grid grid-cols-[1fr_1fr_repeat(3,3rem)] gap-2 mt-3 sm:flex sm:justify-center sm:gap-3 sm:mt-4 sm:flex-wrap">
+      <div className="grid grid-cols-5 gap-2 mt-3 sm:flex sm:justify-center sm:gap-3 sm:mt-4 sm:flex-wrap">
         <button
           className="h-12 min-w-0 px-3 bg-green-700 hover:bg-green-600 disabled:bg-neutral-400 text-white font-semibold rounded-xl flex items-center justify-center gap-2 shadow-sm sm:px-5 sm:rounded-2xl"
           onClick={startCall}
@@ -429,7 +514,9 @@ function VideoChat() {
           title="Ring selected person"
         >
           <FaPhoneAlt />
-          <span className="truncate">{displayUser ? `Ring ${displayUser.name}` : "Select"}</span>
+          <span className="hidden truncate sm:inline">
+            {displayUser ? `Ring ${displayUser.name}` : "Select"}
+          </span>
         </button>
         <button
           className="h-12 min-w-0 px-3 bg-orange-600 hover:bg-orange-500 disabled:bg-neutral-400 text-white font-semibold rounded-xl flex items-center justify-center gap-2 shadow-sm sm:px-5 sm:rounded-2xl"
@@ -438,7 +525,9 @@ function VideoChat() {
           title="Share your screen"
         >
           {isShare ? <FaStopCircle /> : <FaDesktop />}
-          <span className="truncate">{isShare ? "Stop Share" : "Share"}</span>
+          <span className="hidden truncate sm:inline">
+            {isShare ? "Stop Share" : "Share"}
+          </span>
         </button>
         <button
           className="h-12 w-12 bg-white border border-neutral-300 hover:bg-neutral-100 text-neutral-900 rounded-xl flex items-center justify-center shadow-sm sm:rounded-2xl"

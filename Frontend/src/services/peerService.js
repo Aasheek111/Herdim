@@ -6,27 +6,72 @@ export default function peerService() {
   let localStream = null;
   let videoSender = null;
   let audioSender = null;
+  let remoteStreamCallback = null;
+  let pendingCandidates = [];
 
-  const pc = new RTCPeerConnection({
-    iceServers: [
-      { urls: "stun:stun1.l.google.com:19302" },
-      {
-        urls: "turn:relay1.expressturn.com:3480",
-        username: "000000002074120375",
-        credential: "jYlmwjdghSd+97J4JRTbvCiRSq8=",
-      },
-    ],
-  });
+  const createPeerConnection = () => {
+    const connection = new RTCPeerConnection({
+      iceServers: [
+        { urls: "stun:stun1.l.google.com:19302" },
+        {
+          urls: "turn:relay1.expressturn.com:3480",
+          username: "000000002074120375",
+          credential: "jYlmwjdghSd+97J4JRTbvCiRSq8=",
+        },
+      ],
+    });
 
-  //  Send ICE candidates to remote peer
-  pc.onicecandidate = (event) => {
-    if (event.candidate && currentTarget) {
-      socket.emit("candidate", {
-        candidate: event.candidate,
-        to: currentTarget,
-      });
+    //  Send ICE candidates to remote peer
+    connection.onicecandidate = (event) => {
+      if (event.candidate && currentTarget) {
+        socket.emit("candidate", {
+          candidate: event.candidate,
+          to: currentTarget,
+        });
+      }
+    };
+
+    connection.ontrack = (event) => {
+      if (remoteStreamCallback) {
+        remoteStreamCallback(event.streams[0]);
+      }
+    };
+
+    return connection;
+  };
+
+  let pc = createPeerConnection();
+
+  const flushPendingCandidates = async () => {
+    const candidates = pendingCandidates;
+    pendingCandidates = [];
+
+    for (const candidate of candidates) {
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch (e) {
+        console.error("Error adding queued ice candidate", e);
+      }
     }
   };
+
+  function resetConnection(target = null) {
+    if (pc) {
+      pc.onicecandidate = null;
+      pc.ontrack = null;
+      pc.close();
+    }
+
+    currentTarget = target || null;
+    videoSender = null;
+    audioSender = null;
+    pendingCandidates = [];
+    pc = createPeerConnection();
+
+    if (localStream) {
+      handleLocalStream(localStream);
+    }
+  }
 
   // lets understand the flow hai ta if someone sends you an offer then you have to take that offer and set the
   // remote description and then create an answer and set the local description and then send the answer to the
@@ -34,6 +79,7 @@ export default function peerService() {
   async function handleOffer(offer, from) {
     currentTarget = from;
     await pc.setRemoteDescription(new RTCSessionDescription(offer));
+    await flushPendingCandidates();
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
     socket.emit("answer", { answer, to: from });
@@ -44,11 +90,21 @@ export default function peerService() {
   async function handleAnswer(answer, from) {
     currentTarget = from;
     await pc.setRemoteDescription(new RTCSessionDescription(answer));
+    await flushPendingCandidates();
   }
 
   //  Handle incoming ICE candidate
-  async function handleCandidate(candidate) {
+  async function handleCandidate(candidate, from = null) {
     try {
+      if (currentTarget && from && from !== currentTarget) {
+        return;
+      }
+
+      if (!pc.remoteDescription) {
+        pendingCandidates.push(candidate);
+        return;
+      }
+
       await pc.addIceCandidate(new RTCIceCandidate(candidate));
     } catch (e) {
       console.error("Error adding received ice candidate", e);
@@ -91,9 +147,7 @@ export default function peerService() {
 
   //  Listen for remote stream
   function onRemoteStream(callback) {
-    pc.ontrack = (event) => {
-      callback(event.streams[0]);
-    };
+    remoteStreamCallback = callback;
   }
 
   function getSenders() {
@@ -132,5 +186,6 @@ export default function peerService() {
     getSenders,
     getLocalStream,
     replaceVideoTrack,
+    resetConnection,
   };
 }
