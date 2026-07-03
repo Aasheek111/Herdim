@@ -8,6 +8,8 @@ const MyContext = createContext();
 export function UserProvider(prop) {
   const [user, setUser] = useState("");
   const [room, setRoom] = useState("");
+  const [roomUsers, setRoomUsers] = useState([]);
+  const [selectedUser, setSelectedUser] = useState(null);
   const [islogin, setIslogin] = useState(false);
 
   const val = {
@@ -17,6 +19,10 @@ export function UserProvider(prop) {
     setIslogin,
     room,
     setRoom,
+    roomUsers,
+    setRoomUsers,
+    selectedUser,
+    setSelectedUser,
   };
   return <MyContext.Provider value={val}>{prop.children}</MyContext.Provider>;
 }
