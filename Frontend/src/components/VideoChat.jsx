@@ -33,10 +33,13 @@ function VideoChat() {
   const remoteVideo = useRef(null);
   const originalStream = useRef(null);
   const screenStreamRef = useRef(null);
+  const callUserRef = useRef(null);
+  const isStoppingShareRef = useRef(false);
   const isShareRef = useRef(false);
   const ringSound = useRef({ context: null, timer: null });
   const [isShare, setisShare] = useState(false);
   const [incomingCall, setIncomingCall] = useState(null);
+  const [callUser, setCallUser] = useState(null);
   const [callStatus, setCallStatus] = useState("Idle");
   const [isMuted, setIsMuted] = useState(false);
   const [isCameraOff, setIsCameraOff] = useState(false);
@@ -45,6 +48,17 @@ function VideoChat() {
   useEffect(() => {
     isShareRef.current = isShare;
   }, [isShare]);
+
+  useEffect(() => {
+    callUserRef.current = callUser;
+  }, [callUser]);
+
+  const rememberCallUser = (person) => {
+    if (!person) return;
+
+    callUserRef.current = person;
+    setCallUser(person);
+  };
 
   const stopRingSound = () => {
     if (ringSound.current.timer) {
@@ -118,6 +132,7 @@ function VideoChat() {
       });
 
     socket.on("call-user", ({ from }) => {
+      rememberCallUser(from);
       setIncomingCall(from);
       setCallStatus(`${from.name} is ringing`);
       startRingSound();
@@ -125,6 +140,7 @@ function VideoChat() {
 
     socket.on("accept-call", async ({ from }) => {
       stopRingSound();
+      rememberCallUser(from);
       setSelectedUser(from);
       setCallStatus(`Connecting with ${from.name}`);
       await createOffer(from.id);
@@ -171,16 +187,20 @@ function VideoChat() {
   }, [setSelectedUser]);
 
   const startCall = async () => {
-    if (!selectedUser) return;
-    setCallStatus(`Ringing ${selectedUser.name}`);
+    const targetUser = selectedUser || callUserRef.current;
+    if (!targetUser) return;
+
+    rememberCallUser(targetUser);
+    setSelectedUser(targetUser);
+    setCallStatus(`Ringing ${targetUser.name}`);
     startRingSound();
-    socket.emit("call-user", { to: selectedUser.id, from: user });
-    console.log("CLICKEDD");
+    socket.emit("call-user", { to: targetUser.id, from: user });
   };
 
   const acceptCall = () => {
     if (!incomingCall) return;
     stopRingSound();
+    rememberCallUser(incomingCall);
     setSelectedUser(incomingCall);
     setCallStatus(`Connecting with ${incomingCall.name}`);
     socket.emit("accept-call", { to: incomingCall.id, from: user });
@@ -194,18 +214,34 @@ function VideoChat() {
   };
 
   const stopShareScreen = async (renegotiate = true) => {
-    const stream = getLocalStream() || originalStream.current;
-    const cameraVideoTrack = stream?.getVideoTracks()[0];
+    if (isStoppingShareRef.current) return;
 
-    await replaceVideoTrack(cameraVideoTrack, renegotiate);
+    isStoppingShareRef.current = true;
+    try {
+      const cameraStream = originalStream.current || getLocalStream();
+      const cameraVideoTrack = cameraStream?.getVideoTracks()[0];
 
-    if (screenStreamRef.current) {
-      screenStreamRef.current.getTracks().forEach((track) => track.stop());
-      screenStreamRef.current = null;
+      await replaceVideoTrack(cameraVideoTrack, renegotiate);
+
+      if (screenStreamRef.current) {
+        screenStreamRef.current.getVideoTracks().forEach((track) => {
+          track.onended = null;
+        });
+        screenStreamRef.current.getTracks().forEach((track) => track.stop());
+        screenStreamRef.current = null;
+      }
+
+      if (localVideo.current && cameraStream) {
+        localVideo.current.srcObject = cameraStream;
+      }
+
+      setisShare(false);
+      if (hasRemoteStream) {
+        setCallStatus("In call");
+      }
+    } finally {
+      isStoppingShareRef.current = false;
     }
-
-    localVideo.current.srcObject = stream;
-    setisShare(false);
   };
 
   const shareScreen = async () => {
@@ -233,8 +269,10 @@ function VideoChat() {
 
       await replaceVideoTrack(screenVideoTrack, true);
 
-      screenVideoTrack.onended = stopShareScreen;
-      localVideo.current.srcObject = screenStream;
+      screenVideoTrack.onended = () => stopShareScreen(true);
+      if (localVideo.current) {
+        localVideo.current.srcObject = screenStream;
+      }
       setisShare(true);
       setCallStatus("Sharing screen");
     } catch (err) {
@@ -247,8 +285,10 @@ function VideoChat() {
       await stopShareScreen(false);
     }
 
-    if (selectedUser) {
-      socket.emit("end-call", { to: selectedUser.id, from: user });
+    const targetUser = callUserRef.current || selectedUser;
+
+    if (targetUser) {
+      socket.emit("end-call", { to: targetUser.id, from: user });
     }
 
     clearRemoteCall("You left the call");
@@ -274,33 +314,36 @@ function VideoChat() {
     }
   };
 
-  const canShareScreen = selectedUser && hasRemoteStream;
+  const displayUser = callUser || selectedUser;
+  const canShareScreen = displayUser && hasRemoteStream;
   const canLeaveCall =
-    selectedUser && (hasRemoteStream || callStatus.toLowerCase().includes("ringing"));
+    displayUser && (hasRemoteStream || callStatus.toLowerCase().includes("ringing"));
+  const canStartCall =
+    (selectedUser || callUser) && !hasRemoteStream && !callStatus.toLowerCase().includes("ringing");
 
   return (
-    <div className="flex flex-col flex-1 min-h-[66vh] bg-[#eef1f5] p-3 md:p-5">
-      <div className="flex items-center justify-between gap-3 mb-4">
-        <div>
+    <div className="flex flex-col flex-1 min-h-[58vh] bg-[#eef1f5] p-3 md:min-h-screen md:p-5">
+      <div className="flex flex-col gap-3 mb-3 sm:flex-row sm:items-center sm:justify-between md:mb-4">
+        <div className="min-w-0">
           <div className="text-xs font-bold uppercase tracking-widest text-blue-600">
             Herdim room
           </div>
-          <h1 className="text-2xl md:text-3xl font-bold text-neutral-950">
+          <h1 className="text-2xl md:text-3xl font-bold text-neutral-950 leading-tight">
             Video Call
           </h1>
-          <p className="text-sm text-neutral-500">
-            {selectedUser ? `Talking target: ${selectedUser.name}` : "Pick someone from the room"}
+          <p className="text-sm text-neutral-500 truncate">
+            {displayUser ? `Calling target: ${displayUser.name}` : "Pick someone from the room"}
           </p>
         </div>
 
-        <div className="bg-white border border-neutral-200 rounded-2xl px-4 py-3 text-right shadow-sm">
+        <div className="bg-white border border-neutral-200 rounded-xl px-4 py-3 text-left shadow-sm sm:text-right">
           <div className="text-xs uppercase text-neutral-500">Status</div>
-          <div className="font-semibold text-neutral-900">{callStatus}</div>
+          <div className="font-semibold text-neutral-900 break-words">{callStatus}</div>
         </div>
       </div>
 
       {/* Video Container */}
-      <div className="relative flex-1 min-h-[440px] bg-neutral-950 rounded-[1.25rem] overflow-hidden flex items-center justify-center shadow-[0_24px_60px_rgba(15,23,42,0.18)] border border-neutral-900">
+      <div className="relative flex-1 min-h-[300px] max-h-[58vh] bg-neutral-950 rounded-2xl overflow-hidden flex items-center justify-center shadow-[0_24px_60px_rgba(15,23,42,0.18)] border border-neutral-900 sm:min-h-[420px] md:max-h-none">
         <video
           ref={remoteVideo}
           autoPlay
@@ -317,15 +360,15 @@ function VideoChat() {
               </div>
             </div>
             <div className="text-xl font-semibold">
-              {selectedUser ? selectedUser.name : "No one selected"}
+              {displayUser ? displayUser.name : "No one selected"}
             </div>
             <div className="text-sm text-neutral-500 mt-1">
-              {selectedUser ? "Ring to start the call" : "Choose someone from the room"}
+              {displayUser ? "Ring to start the call" : "Choose someone from the room"}
             </div>
           </div>
         )}
 
-        <div className="absolute top-4 right-4 w-32 h-28 md:w-48 md:h-36 rounded-2xl overflow-hidden border border-white/30 shadow-2xl bg-neutral-900">
+        <div className="absolute top-3 right-3 w-28 h-24 rounded-xl overflow-hidden border border-white/30 shadow-2xl bg-neutral-900 sm:top-4 sm:right-4 sm:w-40 sm:h-32 md:w-48 md:h-36">
           <video
             ref={localVideo}
             autoPlay
@@ -378,47 +421,47 @@ function VideoChat() {
       </div>
 
       {/* Buttons */}
-      <div className="flex justify-center gap-3 mt-4 flex-wrap">
+      <div className="grid grid-cols-[1fr_1fr_repeat(3,3rem)] gap-2 mt-3 sm:flex sm:justify-center sm:gap-3 sm:mt-4 sm:flex-wrap">
         <button
-          className="h-12 px-5 bg-green-700 hover:bg-green-600 disabled:bg-neutral-400 text-white font-semibold rounded-2xl flex items-center gap-2 shadow-sm"
+          className="h-12 min-w-0 px-3 bg-green-700 hover:bg-green-600 disabled:bg-neutral-400 text-white font-semibold rounded-xl flex items-center justify-center gap-2 shadow-sm sm:px-5 sm:rounded-2xl"
           onClick={startCall}
-          disabled={!selectedUser || hasRemoteStream}
+          disabled={!canStartCall}
           title="Ring selected person"
         >
           <FaPhoneAlt />
-          {selectedUser ? `Ring ${selectedUser.name}` : "Select Person"}
+          <span className="truncate">{displayUser ? `Ring ${displayUser.name}` : "Select"}</span>
         </button>
         <button
-          className="h-12 px-5 bg-orange-600 hover:bg-orange-500 disabled:bg-neutral-400 text-white font-semibold rounded-2xl flex items-center gap-2 shadow-sm"
+          className="h-12 min-w-0 px-3 bg-orange-600 hover:bg-orange-500 disabled:bg-neutral-400 text-white font-semibold rounded-xl flex items-center justify-center gap-2 shadow-sm sm:px-5 sm:rounded-2xl"
           onClick={shareScreen}
           disabled={!canShareScreen}
           title="Share your screen"
         >
           {isShare ? <FaStopCircle /> : <FaDesktop />}
-          {isShare ? "Stop Sharing" : "Share Screen"}
+          <span className="truncate">{isShare ? "Stop Share" : "Share"}</span>
         </button>
         <button
-          className="h-12 w-12 bg-white border border-neutral-300 hover:bg-neutral-100 text-neutral-900 rounded-2xl flex items-center justify-center shadow-sm"
+          className="h-12 w-12 bg-white border border-neutral-300 hover:bg-neutral-100 text-neutral-900 rounded-xl flex items-center justify-center shadow-sm sm:rounded-2xl"
           onClick={toggleMute}
           title={isMuted ? "Unmute mic" : "Mute mic"}
         >
           {isMuted ? <FaMicrophoneSlash /> : <FaMicrophone />}
         </button>
         <button
-          className="h-12 w-12 bg-white border border-neutral-300 hover:bg-neutral-100 text-neutral-900 rounded-2xl flex items-center justify-center shadow-sm"
+          className="h-12 w-12 bg-white border border-neutral-300 hover:bg-neutral-100 text-neutral-900 rounded-xl flex items-center justify-center shadow-sm sm:rounded-2xl"
           onClick={toggleCamera}
           title={isCameraOff ? "Turn camera on" : "Turn camera off"}
         >
           {isCameraOff ? <FaVideoSlash /> : <FaVideo />}
         </button>
         <button
-          className="h-12 px-5 bg-red-600 hover:bg-red-500 disabled:bg-neutral-400 text-white font-semibold rounded-2xl flex items-center gap-2 shadow-sm"
+          className="h-12 w-12 bg-red-600 hover:bg-red-500 disabled:bg-neutral-400 text-white font-semibold rounded-xl flex items-center justify-center gap-2 shadow-sm sm:w-auto sm:px-5 sm:rounded-2xl"
           onClick={leaveCall}
           disabled={!canLeaveCall}
           title="Leave call"
         >
           <FaPhoneSlash />
-          Leave
+          <span className="hidden sm:inline">Leave</span>
         </button>
       </div>
     </div>

@@ -4,7 +4,7 @@ import VideoChat from "./VideoChat";
 
 function Dashboard() {
   return (
-    <div className="flex h-screen flex-col sm:flex-row bg-[#f4f5f7] overflow-hidden">
+    <div className="flex min-h-dvh flex-col bg-[#f4f5f7] md:h-screen md:flex-row md:overflow-hidden">
       <VideoChat />
       <Chat />
     </div>

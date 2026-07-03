@@ -87,8 +87,8 @@ function Chat() {
   };
 
   return (
-    <aside className="w-full sm:w-[380px] bg-white border-l border-neutral-200 flex flex-col text-black h-[42vh] sm:h-screen">
-      <div className="p-4 border-b border-neutral-200">
+    <aside className="w-full bg-white border-t border-neutral-200 flex flex-col text-black min-h-[42vh] md:h-screen md:w-[380px] md:border-l md:border-t-0">
+      <div className="p-3 border-b border-neutral-200 sm:p-4">
         <div className="flex items-center justify-between mb-3">
           <div>
             <h2 className="text-lg font-bold text-neutral-950">Room</h2>
@@ -101,7 +101,7 @@ function Chat() {
           </div>
         </div>
 
-        <div className="space-y-2 max-h-44 overflow-y-auto pr-1">
+        <div className="space-y-2 max-h-36 overflow-y-auto pr-1 sm:max-h-44">
           <button
             className={`w-full text-left p-3 rounded-xl flex items-center justify-between transition-colors ${
               !selectedUser
@@ -136,7 +136,7 @@ function Chat() {
         </div>
       </div>
 
-      <div className="px-4 py-3 bg-neutral-50 border-b border-neutral-200">
+      <div className="px-3 py-3 bg-neutral-50 border-b border-neutral-200 sm:px-4">
         <div className="text-xs uppercase text-neutral-500">Chatting with</div>
         <div className="font-semibold text-neutral-950">
           {selectedUser ? selectedUser.name : "Everyone"}
@@ -144,7 +144,7 @@ function Chat() {
       </div>
 
       <div
-        className="chat flex-1 flex flex-col gap-2 overflow-y-auto p-4 bg-[#f7f8fa]"
+        className="chat flex-1 min-h-[220px] flex flex-col gap-2 overflow-y-auto p-3 bg-[#f7f8fa] sm:p-4 md:min-h-0"
         ref={chatRef}
       >
         {messages.map((mes, ind) => {
